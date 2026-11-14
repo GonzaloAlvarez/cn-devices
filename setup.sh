@@ -42,12 +42,22 @@ curl -fsS http://127.0.0.1:8087/api/health >/dev/null || die "UpSnap did not bec
 
 SU_EMAIL="$(env_get UPSNAP_SUPERUSER_EMAIL)"
 SU_PASS="$(env_get UPSNAP_SUPERUSER_PASSWORD)"
-if [[ -n "$SU_EMAIL" && -n "$SU_PASS" ]]; then
-  log "ensuring PocketBase superuser ${SU_EMAIL}"
-  docker compose exec -T upsnap /app/upsnap superuser upsert "$SU_EMAIL" "$SU_PASS" >/dev/null \
-    || die "superuser upsert failed"
+[[ -n "$SU_EMAIL" && -n "$SU_PASS" ]] || die "UPSNAP_SUPERUSER_EMAIL / UPSNAP_SUPERUSER_PASSWORD missing in .env"
+API=http://127.0.0.1:8087/api
+su_json() { python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2], "password": sys.argv[3], "passwordConfirm": sys.argv[3]}))' "$1" "$SU_EMAIL" "$SU_PASS"; }
+su_login() { curl -s -o /dev/null -w "%{http_code}" -X POST "$API/collections/_superusers/auth-with-password" -H "Content-Type: application/json" -d "$(su_json identity)"; }
+log "ensuring PocketBase superuser ${SU_EMAIL}"
+if [[ "$(su_login)" == "200" ]]; then
+  echo "  superuser login ok"
 else
-  die "UPSNAP_SUPERUSER_EMAIL / UPSNAP_SUPERUSER_PASSWORD missing in .env"
+  # UpSnap's binary ignores PocketBase's `superuser upsert` subcommand (it just
+  # serves), so use the installer token PocketBase prints on a fresh data dir.
+  TOKEN="$(docker compose logs upsnap 2>&1 | grep -o 'pbinstall/[A-Za-z0-9._-]*' | tail -1 | cut -d/ -f2 || true)"
+  [[ -n "$TOKEN" ]] || die "superuser login failed and no installer token in the log; create it at https://devices.lab.gn.al/_/ or fix UPSNAP_SUPERUSER_* in .env"
+  CODE="$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/collections/_superusers/records" -H "Authorization: $TOKEN" -H "Content-Type: application/json" -d "$(su_json email)")"
+  [[ "$CODE" == "200" ]] || die "superuser creation returned HTTP $CODE"
+  [[ "$(su_login)" == "200" ]] || die "superuser created but login still fails"
+  echo "  superuser created"
 fi
 
 log "seed.py configure"

@@ -107,6 +107,16 @@ def configure(pb, env):
         pb.write("PATCH", f"/api/collections/settings_private/records/{s['id']}",
                  {"lazy_ping": True}, "lazy_ping → true")
 
+    print("settings: setup_completed + interval")
+    pub = pb.all("settings_public")
+    if pub and not pub[0].get("setup_completed"):
+        pb.write("PATCH", f"/api/collections/settings_public/records/{pub[0]['id']}",
+                 {"setup_completed": True}, "setup_completed → true (skip the first-run wizard)")
+    interval = env.get("UPSNAP_INTERVAL", "*/15 * * * * *")
+    if s.get("interval") != interval:
+        pb.write("PATCH", f"/api/collections/settings_private/records/{s['id']}",
+                 {"interval": interval}, f"interval → {interval}")
+
     print("users collection: Authentik OIDC provider")
     cid, csec = env.get("OIDC_CLIENT_ID", ""), env.get("OIDC_CLIENT_SECRET", "")
     base = env.get("OIDC_BASE_URL", "https://auth.lab.gn.al/application/o").rstrip("/")
@@ -196,7 +206,7 @@ def render(dev, defaults):
         "name": d["name"],
         "ip": addr,
         "mac": d.get("mac", "00:00:00:00:00:00"),
-        "netmask": d.get("netmask", ""),
+        "netmask": d.get("netmask", "255.255.255.0"),  # required by UpSnap even for FQDN devices
         "description": d.get("description", ""),
         "link": d.get("link", ""),
         "link_open": "new_tab" if d.get("link") else "",
@@ -245,16 +255,18 @@ def devices(pb, env, inv):
     for dev in inv.get("device", []):
         for g in dev.get("groups", defaults.get("groups", [])):
             if g not in group_ids:
-                group_ids[g] = ensure_named(pb, "groups", {"name": g}, f"name={q(g)}", f"group {g}")
+                group_ids[g] = ensure_named(pb, "device_groups", {"name": g}, f"name={q(g)}", f"group {g}")
+    email = env.get("OPERATOR_EMAIL", "")
+    user = pb.first("users", f"email={q(email)}") if email else None
     print("devices")
     for dev in inv.get("device", []):
         rec, ports, groups = render(dev, defaults)
         rec["ports"] = [port_ids[p] for p in ports]
         rec["groups"] = [group_ids[g] for g in groups]
+        if user:
+            rec["created_by"] = user["id"]
         ensure_named(pb, "devices", rec, f"name={q(rec['name'])}", f"device {rec['name']}")
     print("operator permissions")
-    email = env.get("OPERATOR_EMAIL", "")
-    user = pb.first("users", f"email={q(email)}") if email else None
     if user and not pb.dry:
         grant_all(pb, user)
     else:
