@@ -243,13 +243,29 @@ def ensure_named(pb, collection, body, flt, label):
     return res.get("id", "dry-run")
 
 
+def ensure_device_ports(pb, device, wanted, catalogue):
+    """UpSnap keeps port status per *port record*, so every device needs its
+    own records (sharing one SSH/22 record across devices makes the dot
+    meaningless). Reuse the device's existing record for a name/number pair,
+    create the missing ones, and return the id list."""
+    existing = device.get("expand", {}).get("ports", []) if device else []
+    ids = []
+    for key in wanted:
+        want = catalogue[key]
+        match = next((p for p in existing if p.get("name") == want["name"] and int(p.get("number", -1)) == int(want["number"])), None)
+        if match:
+            ids.append(match["id"])
+        else:
+            res = pb.write("POST", "/api/collections/ports/records",
+                           {"name": want["name"], "number": int(want["number"])},
+                           f"port {want['name']}/{want['number']} created for {device['name'] if device else 'new device'}")
+            ids.append(res.get("id", "dry-run"))
+    return ids
+
+
 def devices(pb, env, inv):
     defaults = inv.get("defaults", {})
-    print("ports")
-    port_ids = {}
-    for key, p in inv.get("ports", {}).items():
-        port_ids[key] = ensure_named(pb, "ports", {"name": p["name"], "number": int(p["number"])},
-                                     f"name={q(p['name'])} && number={int(p['number'])}", f"port {p['name']}/{p['number']}")
+    catalogue = inv.get("ports", {})
     print("groups")
     group_ids = {}
     for dev in inv.get("device", []):
@@ -261,7 +277,10 @@ def devices(pb, env, inv):
     print("devices")
     for dev in inv.get("device", []):
         rec, ports, groups = render(dev, defaults)
-        rec["ports"] = [port_ids[p] for p in ports]
+        current = pb.call("GET", "/api/collections/devices/records",
+                          params={"filter": f"name={q(rec['name'])}", "perPage": 1, "expand": "ports"}).get("items", [])
+        current = current[0] if current else None
+        rec["ports"] = ensure_device_ports(pb, current or {"name": rec["name"]}, ports, catalogue)
         rec["groups"] = [group_ids[g] for g in groups]
         if user:
             rec["created_by"] = user["id"]
