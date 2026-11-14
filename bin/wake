@@ -1,0 +1,15 @@
+#!/bin/sh
+# wake <mac> <broadcast> — UpSnap wake_cmd for devices on subnets kaiser is
+# not attached to. Relays the magic packet through pfSense's wol(1), which
+# has an interface on every VLAN. Devices on 10.1.1.0/24 leave wake_cmd
+# empty and get UpSnap's own broadcast instead.
+# Needs PFSENSE_HOST / PFSENSE_SSH_USER (compose env) and /keys/pfsense.
+set -eu
+[ $# -eq 2 ] || { echo "usage: wake <mac> <broadcast-address>" >&2; exit 64; }
+: "${PFSENSE_HOST:?PFSENSE_HOST not set}" "${PFSENSE_SSH_USER:?PFSENSE_SSH_USER not set}"
+exec timeout 15 ssh -i /keys/pfsense \
+  -o BatchMode=yes -o ConnectTimeout=5 \
+  -o StrictHostKeyChecking=accept-new \
+  -o UserKnownHostsFile=/app/pb_data/known_hosts \
+  -o LogLevel=ERROR \
+  "${PFSENSE_SSH_USER}@${PFSENSE_HOST}" /usr/local/bin/wol -i "$2" "$1"

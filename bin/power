@@ -1,0 +1,18 @@
+#!/bin/sh
+# power <key> <user@host> <poweroff|reboot|suspend> — UpSnap shutdown_cmd.
+#
+# Asks the host's forced command (host/devices-cmd) to schedule the action
+# two seconds later and returns immediately, so the SSH session never races
+# the shutdown. UpSnap then polls ping_cmd until the host is gone.
+set -eu
+[ $# -eq 3 ] || { echo "usage: power <key> <user@host> <poweroff|reboot|suspend>" >&2; exit 64; }
+case "$3" in
+  poweroff|reboot|suspend) ;;
+  *) echo "power: unknown action '$3'" >&2; exit 64 ;;
+esac
+exec timeout 20 ssh -i "/keys/$1" \
+  -o BatchMode=yes -o ConnectTimeout=5 \
+  -o StrictHostKeyChecking=accept-new \
+  -o UserKnownHostsFile=/app/pb_data/known_hosts \
+  -o LogLevel=ERROR \
+  "$2" "$3"

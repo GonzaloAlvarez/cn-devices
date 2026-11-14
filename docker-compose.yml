@@ -1,0 +1,85 @@
+# cn-devices — device power & SSH-reachability dashboard for the homelab.
+#
+# UpSnap (Go + PocketBase + SvelteKit) on kaiser.lan. Design notes:
+#   * network_mode: host — Wake-on-LAN magic packets are link-layer
+#     broadcasts, so the process must sit on kaiser's real interface
+#     (10.1.1.0/24). Other subnets are woken through pfSense (bin/wake).
+#     The UI is bound to 127.0.0.1:8087 and only kaiser's traefik-lan
+#     (cn-home) reaches it: devices.lab.gn.al (canonical), devices.kaiser.lan 301s.
+#   * No tailnet sidecar: the tailnet reaches the LAN copy through the
+#     infra-exit subnet route (cn-root-docker/tailnet/traefik/dynamic/devices.yml),
+#     the same path neptune's names use.
+#   * bin/ (probe, power, wake, nowake) is mounted at /opt/devices and
+#     referenced from each device's ping_cmd / shutdown_cmd / wake_cmd.
+#     keys/ (Kauket-installed) holds the dedicated `devices` probe key and the
+#     pfSense relay key. The operator's main key never lands here.
+#   * kaiser's CA bundle is mounted so PocketBase can talk to
+#     auth.lab.gn.al, which resolves to neptune on the LAN (step-ca leaf).
+#   * Runs as root in the container (upstream default; privileged ICMP needs
+#     NET_RAW). cap_drop ALL + no-new-privileges keep it narrow.
+services:
+  upsnap:
+    # Major pin. UpSnap runs PocketBase migrations on boot, so kaiser's
+    # host-wide Watchtower only notifies (monitor-only); upgrade by hand with
+    # `docker compose pull && docker compose up -d` after reading the release
+    # notes, then re-run `python3 seed.py devices` if the schema changed.
+    # Unpin condition: none planned — minor/patch bumps are manual by design.
+    image: ghcr.io/seriousm4x/upsnap:5
+    network_mode: host
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    security_opt: [no-new-privileges=true]
+    environment:
+      - TZ=${TIMEZONE}
+      - UPSNAP_HTTP_LISTEN=127.0.0.1:8087
+      # cron with a seconds field: probe every 30 s (lazy_ping makes this
+      # apply only while a browser is connected; seed.py enables it).
+      - UPSNAP_INTERVAL=*/30 * * * * *
+      - UPSNAP_LOG_LEVEL=INFO
+      - UPSNAP_WEBSITE_TITLE=Devices
+      - UPSNAP_SCAN_RANGE=10.1.1.0/24
+      - UPSNAP_SCAN_TIMEOUT=500ms
+      - PFSENSE_HOST=${PFSENSE_HOST}
+      - PFSENSE_SSH_USER=${PFSENSE_SSH_USER}
+    volumes:
+      - ./data:/app/pb_data
+      - ./bin:/opt/devices:ro
+      - ./keys:/keys:ro
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8087/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      com.centurylinklabs.watchtower.monitor-only: "true"
+      # offen stops this container for the few seconds the weekly tar takes
+      # (PocketBase is SQLite+WAL; the image has no sqlite3 for an online copy).
+      docker-volume-backup.stop-during-backup: "cn-devices"
+    restart: unless-stopped
+
+  # Weekly off-site archive of ./data (users, permissions, settings, the
+  # devices table — the devices themselves are also reproducible from
+  # devices.toml). Shared bucket + raidnas WebDAV, `devices/` prefix.
+  backup:
+    image: offen/docker-volume-backup:v2.43.4
+    environment:
+      - BACKUP_CRON_EXPRESSION=0 3 * * 0
+      - BACKUP_FILENAME=devices-%Y-%m-%dT%H-%M-%S.tar.gz
+      - BACKUP_RETENTION_DAYS=56
+      - BACKUP_STOP_DURING_BACKUP_LABEL=cn-devices
+      - AWS_S3_BUCKET_NAME=${BACKUP_S3_BUCKET}
+      - AWS_ACCESS_KEY_ID=${BACKUP_AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${BACKUP_AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_REGION=${BACKUP_AWS_REGION}
+      - AWS_S3_PATH=devices/
+      - WEBDAV_URL=${BACKUP_WEBDAV_URL}
+      - WEBDAV_PATH=/devices/
+      - WEBDAV_USERNAME=${BACKUP_WEBDAV_USER}
+      - WEBDAV_PASSWORD=${BACKUP_WEBDAV_PASSWORD}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ./data:/backup/pb_data:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped

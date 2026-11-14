@@ -1,0 +1,16 @@
+#!/bin/sh
+# probe <key> <user@host> — UpSnap ping_cmd for SSH-capable devices.
+#
+# Exit 0 (UpSnap: online) only when the host accepts /keys/<key> AND the
+# forced command (host/devices-cmd) answers `probe`. A host that is up but
+# not enrolled fails here (status red) while its port-22 dot stays green.
+# UpSnap runs ping_cmd with no timeout and no templating, hence `timeout`
+# and the hard-coded target in the device record.
+set -eu
+[ $# -eq 2 ] || { echo "usage: probe <key> <user@host>" >&2; exit 64; }
+exec timeout 8 ssh -i "/keys/$1" \
+  -o BatchMode=yes -o ConnectTimeout=4 \
+  -o StrictHostKeyChecking=accept-new \
+  -o UserKnownHostsFile=/app/pb_data/known_hosts \
+  -o LogLevel=ERROR \
+  "$2" probe >/dev/null

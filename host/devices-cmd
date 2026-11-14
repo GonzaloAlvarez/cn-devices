@@ -1,0 +1,54 @@
+#!/bin/sh
+# devices-cmd — forced command for the cn-devices probe key.
+#
+# Installed on each managed host by host/enroll.sh and bound to the
+# `devices@kaiser` public key in ~/.ssh/authorized_keys with
+#   restrict,command="…/devices-cmd" ssh-ed25519 …
+# so that key can do exactly four things, nothing else:
+#   probe     → prints "ok" (UpSnap status)
+#   poweroff  → schedules a power-off in 2 s and returns
+#   reboot    → schedules a reboot in 2 s and returns
+#   suspend   → schedules a suspend/sleep in 2 s and returns
+# Linux actions go through `sudo -n` (amun grants NOPASSWD); macOS power
+# actions use `sudo -n shutdown`, sleep uses `pmset sleepnow` (no sudo).
+set -u
+
+os="$(uname -s)"
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+
+later() {
+  # detach from the SSH session so the connection closing cannot kill it
+  nohup sh -c "sleep 2; $1" >/dev/null 2>&1 </dev/null &
+}
+need_sudo() {
+  sudo -n true 2>/dev/null || { echo "devices-cmd: sudo -n denied on $(hostname)" >&2; exit 3; }
+}
+
+case "$cmd" in
+  probe)
+    echo ok
+    ;;
+  poweroff)
+    need_sudo
+    if [ "$os" = Darwin ]; then later "sudo -n shutdown -h now"; else later "sudo -n systemctl poweroff"; fi
+    echo "poweroff scheduled"
+    ;;
+  reboot)
+    need_sudo
+    if [ "$os" = Darwin ]; then later "sudo -n shutdown -r now"; else later "sudo -n systemctl reboot"; fi
+    echo "reboot scheduled"
+    ;;
+  suspend)
+    if [ "$os" = Darwin ]; then
+      later "pmset sleepnow"
+    else
+      need_sudo
+      later "sudo -n systemctl suspend"
+    fi
+    echo "suspend scheduled"
+    ;;
+  *)
+    echo "devices-cmd: denied: '${cmd:-<none>}'" >&2
+    exit 2
+    ;;
+esac

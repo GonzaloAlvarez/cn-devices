@@ -1,0 +1,113 @@
+# cn-devices inventory as code. `python3 seed.py devices` upserts every
+# [[device]] into UpSnap (matched by name) and re-grants the operator's
+# permissions. One-off additions through the UpSnap UI are fine; run
+# `python3 seed.py export` to pull the live set back into this format.
+#
+# Per device:
+#   address   IP (preferred; static lease) or FQDN with a dot (DHCP-only hosts)
+#   mac       required by UpSnap; 00:00:00:00:00:00 when unknown and unwakeable
+#   netmask   only meaningful with wake = "direct" (broadcast derivation)
+#   probe     true → status = SSH login with the `devices` key (bin/probe)
+#             false → status = ICMP (devices without SSH)
+#   wake      "direct" (kaiser's own broadcast, 10.1.1.0/24 only)
+#             "relay"  + broadcast = "x.y.z.255" (pfSense wol via bin/wake)
+#             "none"   + wake_note = "…" (bin/nowake explains why)
+#   shutdown  "poweroff" | "reboot" | "suspend" | "none"
+
+[defaults]
+user = "gonzalo"
+key = "devices"
+ports = ["ssh"]
+wake_timeout = 180
+shutdown_timeout = 120
+shutdown_confirm = true
+
+[ports.ssh]
+name = "SSH"
+number = 22
+
+[[device]]
+name = "elitedesk"
+address = "10.1.1.98"
+mac = "c8:d9:d2:1e:74:69"
+netmask = "255.255.255.0"
+groups = ["Boxes"]
+wake = "direct"
+shutdown = "poweroff"
+link = "https://10.1.1.98:8006"
+description = "HP EliteDesk 800 G4 SFF — Proxmox VE on Debian 12. WoL armed (/etc/network/if-up.d/ethtool). Usually off."
+
+[[device]]
+name = "printer"
+address = "10.2.0.30"
+mac = "dc:53:60:69:54:15"
+netmask = "255.255.0.0"
+groups = ["Boxes"]
+wake = "none"
+wake_note = "Wi-Fi NUC (printer.lan), no WoWLAN"
+shutdown = "poweroff"
+link = "https://scan.print.lan"
+description = "Intel NUC5i5RYH — Ubuntu 26.04, print + scan server (cn-printer). Wi-Fi only."
+
+[[device]]
+name = "kiosk"
+address = "kiosk.lan"
+mac = "b8:27:eb:e5:6d:a2"
+groups = ["Boxes"]
+wake = "none"
+wake_note = "Raspberry Pi 3B has no Wake-on-LAN; power-cycle it"
+shutdown = "poweroff"
+description = "Raspberry Pi 3 Model B — Debian 13, HA wall display (amun-kiosk). DHCP."
+
+[[device]]
+name = "eye"
+address = "eye.lan"
+mac = "00:00:00:00:00:00"
+groups = ["Boxes"]
+wake = "none"
+wake_note = "Radxa ZERO 3 on Wi-Fi; roams with the operator"
+shutdown = "poweroff"
+link = "http://eye.lan:8765"
+description = "Radxa ZERO 3 — motionEye USB camera box (cn-eye). Wi-Fi DHCP; offline when away. MAC unknown."
+
+[[device]]
+name = "klaus"
+address = "10.2.0.31"
+mac = "b2:be:86:64:ef:16"
+netmask = "255.255.0.0"
+groups = ["Laptops"]
+wake = "none"
+wake_note = "MacBook on Wi-Fi; wake it from the lid"
+shutdown = "suspend"
+description = "MacBook Pro M4 Max — macOS. Private Wi-Fi MAC (rotates; pinned lease re-keyed by cn-home). Sleep instead of power-off."
+
+[[device]]
+name = "minerva"
+address = "10.2.0.32"
+mac = "d2:ff:fd:79:ea:d7"
+netmask = "255.255.0.0"
+groups = ["Laptops"]
+wake = "none"
+wake_note = "MacBook on Wi-Fi; wake it from the lid"
+shutdown = "suspend"
+description = "Personal Mac — macOS. Private Wi-Fi MAC (rotates). Sleep instead of power-off."
+
+[[device]]
+name = "lenovoyoga"
+address = "lenovoyoga.lan"
+mac = "00:00:00:00:00:00"
+groups = ["Laptops"]
+wake = "none"
+wake_note = "Laptop on Wi-Fi"
+shutdown = "suspend"
+description = "Lenovo Yoga — Ubuntu 26.04 laptop, amun core only. DHCP; offline when closed. MAC unknown."
+
+[[device]]
+name = "lenovot14"
+address = "lenovot14.lan"
+mac = "00:00:00:00:00:00"
+groups = ["Laptops"]
+wake = "none"
+wake_note = "Laptop on Wi-Fi"
+shutdown = "suspend"
+description = "Lenovo ThinkPad T14 — laptop. Not yet enrolled; shows red until host/enroll.sh runs on it. MAC unknown."

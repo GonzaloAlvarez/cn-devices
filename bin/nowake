@@ -1,0 +1,6 @@
+#!/bin/sh
+# nowake <reason…> — wake_cmd for devices that cannot be woken over the
+# network (Wi-Fi laptops, Raspberry Pis). UpSnap surfaces stderr as the
+# error toast, so the button explains itself instead of silently no-oping.
+echo "This device cannot be woken over the network: $*" >&2
+exit 1

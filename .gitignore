@@ -1,0 +1,7 @@
+.env
+data/
+keys/*
+!keys/.gitkeep
+*.bak
+.DS_Store
+__pycache__/
