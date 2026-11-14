@@ -65,7 +65,7 @@ class PB:
         if self.dry:
             print(f"  [dry-run] {method} {path} {json.dumps(body)[:200]}")
             return {}
-        res = self.call(method, path, body)
+        res = self.call(method, path, body) or {}
         print(f"  {label}")
         return res
 
@@ -243,24 +243,34 @@ def ensure_named(pb, collection, body, flt, label):
     return res.get("id", "dry-run")
 
 
-def ensure_device_ports(pb, device, wanted, catalogue):
+def ensure_device_ports(pb, device, wanted, catalogue, refcount):
     """UpSnap keeps port status per *port record*, so every device needs its
     own records (sharing one SSH/22 record across devices makes the dot
-    meaningless). Reuse the device's existing record for a name/number pair,
-    create the missing ones, and return the id list."""
+    meaningless). Reuse a record only when this device is its sole owner,
+    otherwise create one; orphans are swept afterwards."""
     existing = device.get("expand", {}).get("ports", []) if device else []
     ids = []
     for key in wanted:
         want = catalogue[key]
-        match = next((p for p in existing if p.get("name") == want["name"] and int(p.get("number", -1)) == int(want["number"])), None)
+        match = next((p for p in existing
+                      if p.get("name") == want["name"] and int(p.get("number", -1)) == int(want["number"])
+                      and refcount.get(p["id"], 0) == 1), None)
         if match:
             ids.append(match["id"])
         else:
             res = pb.write("POST", "/api/collections/ports/records",
                            {"name": want["name"], "number": int(want["number"])},
-                           f"port {want['name']}/{want['number']} created for {device['name'] if device else 'new device'}")
+                           f"port {want['name']}/{want['number']} created for {device.get('name', 'new device')}")
             ids.append(res.get("id", "dry-run"))
     return ids
+
+
+def sweep_orphan_ports(pb):
+    used = {pid for d in pb.all("devices") for pid in d.get("ports", [])}
+    for prt in pb.all("ports"):
+        if prt["id"] not in used:
+            pb.write("DELETE", f"/api/collections/ports/records/{prt['id']}", None,
+                     f"orphan port {prt['name']}/{prt['number']} deleted")
 
 
 def devices(pb, env, inv):
@@ -275,16 +285,22 @@ def devices(pb, env, inv):
     email = env.get("OPERATOR_EMAIL", "")
     user = pb.first("users", f"email={q(email)}") if email else None
     print("devices")
+    refcount = {}
+    for d in pb.all("devices"):
+        for pid in d.get("ports", []):
+            refcount[pid] = refcount.get(pid, 0) + 1
     for dev in inv.get("device", []):
         rec, ports, groups = render(dev, defaults)
         current = pb.call("GET", "/api/collections/devices/records",
                           params={"filter": f"name={q(rec['name'])}", "perPage": 1, "expand": "ports"}).get("items", [])
         current = current[0] if current else None
-        rec["ports"] = ensure_device_ports(pb, current or {"name": rec["name"]}, ports, catalogue)
+        rec["ports"] = ensure_device_ports(pb, current or {"name": rec["name"]}, ports, catalogue, refcount)
         rec["groups"] = [group_ids[g] for g in groups]
         if user:
             rec["created_by"] = user["id"]
         ensure_named(pb, "devices", rec, f"name={q(rec['name'])}", f"device {rec['name']}")
+    if not pb.dry:
+        sweep_orphan_ports(pb)
     print("operator permissions")
     if user and not pb.dry:
         grant_all(pb, user)
