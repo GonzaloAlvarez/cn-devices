@@ -26,8 +26,9 @@ services:
     # Unpin condition: none planned — minor/patch bumps are manual by design.
     image: ghcr.io/seriousm4x/upsnap:5
     network_mode: host
-    # The image's CMD is exec-form `serve --http ${UPSNAP_HTTP_LISTEN}` — the
-    # variable is never expanded, so the listen address is given explicitly.
+    # Listen address: UpSnap reads UPSNAP_HTTP_LISTEN itself (the image ENV
+    # defaults it to 0.0.0.0:8090, which on the host netns would expose the UI
+    # LAN-wide); the explicit command covers the exec-form CMD placeholder too.
     command: ["serve", "--http", "127.0.0.1:8087"]
     # Root inside the container: NET_RAW for ICMP, DAC_OVERRIDE because
     # ./data and ./keys are owned by gonzalo (uid 1000) and cap_drop ALL
@@ -38,6 +39,7 @@ services:
     security_opt: [no-new-privileges=true]
     environment:
       - TZ=${TIMEZONE}
+      - UPSNAP_HTTP_LISTEN=127.0.0.1:8087
       # cron with a seconds field: probe every 30 s (lazy_ping makes this
       # apply only while a browser is connected; seed.py enables it).
       - UPSNAP_INTERVAL=*/30 * * * * *
