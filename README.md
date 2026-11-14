@@ -180,6 +180,9 @@ and `home.lab.gn.al` use the same health URL.
   enrolled (`host/enroll.sh`), or the host key changed (a rebuilt host) —
   remove its line from `data/known_hosts` (`StrictHostKeyChecking=accept-new`
   records the first key it sees). Test by hand with the exec command above.
+- **A Wi-Fi Mac is green but its SSH dot is red.** UpSnap's port check is a
+  TCP connect with a fixed 500 ms budget; a sleeping Wi-Fi radio often misses
+  it while the 4 s SSH probe succeeds (minerva does this). Trust the status dot.
 - **Wake says "cannot be woken over the network".** That is `bin/nowake` for
   Wi-Fi laptops and Raspberry Pis; it is deliberate.
 - **Wake times out on a wired host.** WoL must be armed on the target (BIOS +
