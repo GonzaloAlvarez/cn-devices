@@ -40,9 +40,10 @@ services:
     environment:
       - TZ=${TIMEZONE}
       - UPSNAP_HTTP_LISTEN=127.0.0.1:8087
-      # cron with a seconds field: probe every 30 s (lazy_ping makes this
-      # apply only while a browser is connected; seed.py enables it).
-      - UPSNAP_INTERVAL=*/30 * * * * *
+      # cron with a seconds field; seed.py configure also writes this into
+      # settings_private and turns lazy_ping off so the exporter always sees
+      # fresh state (one SSH probe per device per 30 s).
+      - UPSNAP_INTERVAL=${UPSNAP_INTERVAL}
       - UPSNAP_LOG_LEVEL=INFO
       - UPSNAP_WEBSITE_TITLE=Devices
       - UPSNAP_SCAN_RANGE=10.1.1.0/24
@@ -65,6 +66,41 @@ services:
       # offen stops this container for the few seconds the weekly tar takes
       # (PocketBase is SQLite+WAL; the image has no sqlite3 for an online copy).
       docker-volume-backup.stop-during-backup: "cn-devices"
+    restart: unless-stopped
+
+  # Prometheus metrics + JSON for the homepages, derived from UpSnap's API as
+  # the read-only `exporter` user (seed.py creates it). Host netns so it can
+  # reach UpSnap on 127.0.0.1:8087; it binds 0.0.0.0:8088 so kaiser's
+  # Prometheus (host.docker.internal) and dynacat (bridge) can scrape it —
+  # UFW admits 8088 from the docker bridges only (setup.sh), the LAN is denied
+  # by default, and the tailnet gets /metrics + /devices.json through
+  # traefik-lan on devices.lab.gn.al. Stateless; Watchtower may update the base image.
+  exporter:
+    image: python:3.13-alpine
+    network_mode: host
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges=true]
+    command: ["python3", "-u", "/opt/exporter/exporter.py"]
+    environment:
+      - UPSNAP_URL=http://127.0.0.1:8087
+      - EXPORTER_LISTEN=0.0.0.0:8088
+      - EXPORTER_POLL_SECONDS=15
+      - UPSNAP_EXPORTER_EMAIL=${UPSNAP_EXPORTER_EMAIL}
+      - UPSNAP_EXPORTER_PASSWORD=${UPSNAP_EXPORTER_PASSWORD}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ./exporter:/opt/exporter:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      upsnap:
+        condition: service_healthy
     restart: unless-stopped
 
   # Weekly off-site archive of ./data (users, permissions, settings, the

@@ -29,6 +29,19 @@ for k in devices pfsense; do
 done
 chmod 700 keys
 mkdir -p data
+for v in UPSNAP_EXPORTER_EMAIL UPSNAP_EXPORTER_PASSWORD; do
+  [[ -n "$(env_get "$v")" ]] || die "$v missing in .env (rotate with kauket add --force, then kauket get)"
+done
+
+# The exporter binds 0.0.0.0:8088 on the host netns; admit it from the docker
+# bridges only (kaiser Prometheus via host.docker.internal, dynacat), exactly
+# like cn-observability's node-exporter on 9100. The LAN stays denied.
+if command -v ufw >/dev/null && sudo -n ufw status 2>/dev/null | grep -q "^Status: active"; then
+  if ! sudo -n ufw status | grep -qE "^8088/tcp\s+ALLOW\s+172\.16\.0\.0/12"; then
+    log "ufw: allow 8088/tcp from 172.16.0.0/12 (cn-devices exporter, docker bridges only)"
+    sudo -n ufw allow from 172.16.0.0/12 to any port 8088 proto tcp comment "cn-devices exporter (docker bridges only)" >/dev/null
+  fi
+fi
 
 log "docker compose up -d --remove-orphans"
 docker compose up -d --remove-orphans
@@ -65,6 +78,14 @@ python3 seed.py configure
 log "seed.py devices"
 python3 seed.py devices
 
+log "waiting for the exporter"
+for _ in $(seq 1 20); do
+  curl -fsS http://127.0.0.1:8088/healthz >/dev/null 2>&1 && break
+  sleep 3
+done
+curl -fsS http://127.0.0.1:8088/healthz >/dev/null || die "exporter not healthy: docker compose logs exporter"
+echo "  $(curl -s http://127.0.0.1:8088/metrics | grep -E '^upsnap_devices_(total|online) ' | tr '\n' ' ')"
+
 cat <<BANNER
 
 
@@ -75,6 +96,7 @@ cn-devices is up.
              https://devices.kaiser.lan      (301 → canonical)
   Tailnet :  https://devices.lab.gn.al       (LE wildcard via traefik-lab → infra-exit)
   Admin   :  https://devices.lab.gn.al/_/    (PocketBase superuser, break-glass)
+  Metrics :  https://devices.lab.gn.al/metrics  + /devices.json (exporter, :8088 on the host)
 
   Login with Authentik (group infra-admins). Inventory: devices.toml →
   python3 seed.py devices. Enrol a new host: host/enroll.sh <user@host>.

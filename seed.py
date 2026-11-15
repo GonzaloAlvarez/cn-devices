@@ -101,18 +101,19 @@ def configure(pb, env):
     if not settings:
         sys.exit("settings_private is empty — has UpSnap finished its first start?")
     s = settings[0]
-    if s.get("lazy_ping") is True:
-        print("  lazy_ping already on")
+    lazy = env.get("UPSNAP_LAZY_PING", "false").strip().lower() in ("1", "true", "yes", "on")
+    if s.get("lazy_ping") is lazy:
+        print(f"  lazy_ping already {lazy}")
     else:
         pb.write("PATCH", f"/api/collections/settings_private/records/{s['id']}",
-                 {"lazy_ping": True}, "lazy_ping → true")
+                 {"lazy_ping": lazy}, f"lazy_ping → {lazy}")
 
     print("settings: setup_completed + interval")
     pub = pb.all("settings_public")
     if pub and not pub[0].get("setup_completed"):
         pb.write("PATCH", f"/api/collections/settings_public/records/{pub[0]['id']}",
                  {"setup_completed": True}, "setup_completed → true (skip the first-run wizard)")
-    interval = env.get("UPSNAP_INTERVAL", "*/15 * * * * *")
+    interval = env.get("UPSNAP_INTERVAL", "*/30 * * * * *")
     if s.get("interval") != interval:
         pb.write("PATCH", f"/api/collections/settings_private/records/{s['id']}",
                  {"interval": interval}, f"interval → {interval}")
@@ -146,6 +147,11 @@ def configure(pb, env):
     if user:
         grant_all(pb, user)
 
+    print("exporter user (read-only)")
+    exp = ensure_exporter(pb, env)
+    if exp:
+        grant_read(pb, exp)
+
 
 def ensure_operator(pb, env):
     email = env.get("OPERATOR_EMAIL", "")
@@ -168,6 +174,45 @@ def ensure_operator(pb, env):
     res = pb.write("POST", "/api/collections/users/records", body,
                    f"user {email} created (random password; logs in through Authentik)")
     return res or {"id": "dry-run"}
+
+
+def ensure_exporter(pb, env):
+    email, pw = env.get("UPSNAP_EXPORTER_EMAIL", ""), env.get("UPSNAP_EXPORTER_PASSWORD", "")
+    if not email or not pw:
+        print("  UPSNAP_EXPORTER_EMAIL/PASSWORD not set — skipping")
+        return None
+    user = pb.first("users", f"email={q(email)}")
+    fields = {f["name"] for f in pb.collection("users").get("fields", [])}
+    if user:
+        # keep the stored password in sync with .env (rotation = change .env, re-run)
+        pb.write("PATCH", f"/api/collections/users/records/{user['id']}",
+                 {"password": pw, "passwordConfirm": pw, "verified": True}, f"user {email} password synced")
+        return user
+    body = {"email": email, "password": pw, "passwordConfirm": pw, "verified": True, "emailVisibility": False}
+    if "username" in fields:
+        body["username"] = "exporter"
+    res = pb.write("POST", "/api/collections/users/records", body, f"user {email} created")
+    return res or {"id": "dry-run"}
+
+
+def grant_read(pb, user):
+    """Exporter: read every device, no create/update/delete/power."""
+    coll = pb.collection("permissions")
+    dev_coll_id = pb.collection("devices")["id"]
+    device_ids = [d["id"] for d in pb.all("devices")]
+    body = {"user": user["id"]}
+    for f in coll.get("fields", []):
+        if f["type"] == "relation" and f.get("collectionId") == dev_coll_id:
+            body[f["name"]] = device_ids if f["name"] == "read" else []
+        elif f["type"] == "bool":
+            body[f["name"]] = False
+    existing = pb.first("permissions", f"user={q(user['id'])}")
+    if existing:
+        pb.write("PATCH", f"/api/collections/permissions/records/{existing['id']}", body,
+                 f"read-only permissions updated for {user.get('email', user['id'])} ({len(device_ids)} devices)")
+    else:
+        pb.write("POST", "/api/collections/permissions/records", body,
+                 f"read-only permissions created for {user.get('email', user['id'])} ({len(device_ids)} devices)")
 
 
 def grant_all(pb, user):
@@ -301,11 +346,15 @@ def devices(pb, env, inv):
         ensure_named(pb, "devices", rec, f"name={q(rec['name'])}", f"device {rec['name']}")
     if not pb.dry:
         sweep_orphan_ports(pb)
-    print("operator permissions")
+    print("operator + exporter permissions")
     if user and not pb.dry:
         grant_all(pb, user)
     else:
         print("  skipped (no operator user yet or dry-run)")
+    exp_email = env.get("UPSNAP_EXPORTER_EMAIL", "")
+    exp = pb.first("users", f"email={q(exp_email)}") if exp_email else None
+    if exp and not pb.dry:
+        grant_read(pb, exp)
 
 
 def export(pb):

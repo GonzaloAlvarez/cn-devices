@@ -24,6 +24,7 @@ operator's user is pre-created and granted everything by `seed.py`.
 | Service | Image | Network | Purpose |
 |---|---|---|---|
 | `upsnap` | `ghcr.io/seriousm4x/upsnap:5` | **host** (`127.0.0.1:8087`) | the app; host netns so magic packets reach kaiser's real interface; `cap_drop ALL` + `NET_RAW` (ICMP) + `DAC_OVERRIDE` (uid-1000-owned `data/`, `keys/`) |
+| `exporter` | `python:3.13-alpine` (`exporter/exporter.py`, stdlib) | **host** (`0.0.0.0:8088`) | polls UpSnap every 15 s as the read-only `exporter` user and serves `/metrics` (Prometheus) + `/devices.json` (homepages) + `/healthz`; UFW admits 8088 from the docker bridges only (`setup.sh`), the LAN is denied, the tailnet gets both paths through traefik-lan on `devices.lab.gn.al` |
 | `backup` | `offen/docker-volume-backup:v2.43.4` | bridge | weekly archive of `./data` → S3 `cloudnet-lab-storage/devices/` + raidnas WebDAV `/devices/`; stops `upsnap` for the seconds the tar takes (SQLite + WAL, no sqlite3 in the image) |
 
 No Tailscale sidecar, no Consul, no watchdog: the tailnet reaches the LAN copy
@@ -56,9 +57,10 @@ non-zero exit is "offline" / "failed" and stderr becomes the error toast.
 | red | green | on, sshd up, but not enrolled / key refused / host key changed |
 | red | red | off or unreachable |
 
-`lazy_ping` is on: probes run every 15 s **only while a browser has the page
-open** (no SSH auth-log noise otherwise), so the first refresh after opening the
-page can take up to 15 s. Wake/shutdown flows probe on their own regardless.
+Probes run every 30 s around the clock (`UPSNAP_INTERVAL`; `lazy_ping` is
+off so the exporter, Grafana and the homepages always see fresh state — one
+SSH login per device per 30 s on the enrolled hosts). Wake/shutdown flows probe
+on their own regardless.
 
 ## Inventory as code
 
@@ -150,11 +152,11 @@ kauket get kaiser.cn_devices_key_pfsense
 amun docker         # boot unit docker-compose@cn-devices + 5-min reconcile cron
 ```
 
-`setup.sh` is idempotent: it waits for `/api/health`, logs in as the superuser
+`setup.sh` is idempotent: it opens UFW 8088 to the docker bridges, waits for `/api/health`, logs in as the superuser
 or creates it from PocketBase's installer token (UpSnap's binary ignores the
 `superuser upsert` subcommand and just serves), then runs `seed.py configure`
-(lazy ping, 15 s interval, `setup_completed`, the Authentik `oidc` provider,
-the operator user + permissions) and `seed.py devices`.
+(30 s interval, lazy ping off, `setup_completed`, the Authentik `oidc` provider,
+the operator user + permissions, the read-only `exporter` user) and `seed.py devices`.
 
 | Task | Command |
 |---|---|
@@ -166,13 +168,32 @@ the operator user + permissions) and `seed.py devices`.
 | Restore | `docker compose stop upsnap`, untar the archive's `pb_data/` over `./data/`, `docker compose start upsnap` (devices are also re-creatable from `devices.toml`) |
 | Resiliency | `systemctl restart docker-compose@cn-devices`; `~/dev/amun-docker/verify --host kaiser.lan` |
 
-## Observability (deliberate deviations from homelab/CLAUDE.md)
+## Observability
 
-UpSnap exposes no metrics. Health is the kaiser `blackbox-https` probe and the
-VPS `blackbox-tailnet-http` probe of `https://devices.lab.gn.al/api/health`
-(both alert through `BlackboxProbeFailed`); logs come from kaiser's host-wide
-promtail (`{project="cn-devices"}`). Homepage entries on `home.kaiser.lan`
-and `home.lab.gn.al` use the same health URL.
+UpSnap itself exposes no metrics; the `exporter` service derives them from its
+API (read-only user, read permission on every device, nothing else):
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `upsnap_device_online` | `device`, `group` | 1 = UpSnap status `online` (SSH probe, or ICMP for probe-less devices) |
+| `upsnap_device_pending` | `device`, `group` | 1 while a wake/shutdown is in flight |
+| `upsnap_device_port_open` | `device`, `group`, `port`, `number` | TCP port dot (`SSH`/22 everywhere) |
+| `upsnap_device_info` | `device`, `group`, `probe`, `wake`, `shutdown`, `address` | capabilities derived from the device's commands |
+| `upsnap_devices_total`, `upsnap_devices_online`, `upsnap_exporter_up`, `upsnap_exporter_last_poll_timestamp_seconds` | — | totals and exporter health |
+
+Scraped by kaiser's Prometheus (`devices-exporter` → `host.docker.internal:8088`)
+and by the VPS Prometheus (`https://devices.lab.gn.al/metrics` through
+traefik-lab). The **Devices** dashboard (uid `devices`, same JSON in
+`cn-observability/config/grafana/provisioning/dashboards/` and
+`cn-root-docker/tailnet/grafana/provisioning/dashboards/`) shows online count,
+a now-table (power, ssh, probe/wake/shutdown capabilities), 7-day uptime and
+24 h state timelines for power and SSH on `grafana.kaiser.lan` and
+`grafana.lab.gn.al`. `/devices.json` feeds the **Devices** widget on
+`home.kaiser.lan` (dynacat, via `host.docker.internal`) and `home.lab.gn.al`
+(Glance, via traefik-lab). Health probes: kaiser `blackbox-https` and VPS
+`blackbox-tailnet-http` on `/api/health` (`BlackboxProbeFailed`); a dead
+exporter trips the generic `PrometheusTargetDown`. Logs: kaiser's host-wide
+promtail (`{project="cn-devices"}`).
 
 ## Troubleshooting
 
@@ -197,6 +218,11 @@ and `home.lab.gn.al` use the same health URL.
   write the uid-1000-owned `data/`; the compose file adds that capability.
 - **All devices show the same SSH dot.** They share one port record; run
   `python3 seed.py devices` (one record per device).
+- **Exporter red / dashboard empty.** `docker compose logs exporter`; the
+  common cause is the `exporter` user's password drifting from `.env` — `python3
+  seed.py configure` re-syncs it. From the Mac: `curl -s https://devices.lab.gn.al/metrics | head`.
+- **Homepage widget says "exporter answered 503".** The exporter is up but its
+  last UpSnap poll failed (see above); `/devices.json` returns the error text.
 - **Login page has no Authentik button.** `python3 seed.py configure` writes
   the provider from `.env`; the redirect URI in Authentik is strictly
   `https://devices.lab.gn.al/api/oauth2-redirect`, so only the canonical origin
