@@ -36,11 +36,18 @@ done
 # The exporter binds 0.0.0.0:8088 on the host netns; admit it from the docker
 # bridges only (kaiser Prometheus via host.docker.internal, dynacat), exactly
 # like cn-observability's node-exporter on 9100. The LAN stays denied.
-if command -v ufw >/dev/null && sudo -n ufw status 2>/dev/null | grep -q "^Status: active"; then
-  if ! sudo -n ufw status | grep -qE "^8088/tcp\s+ALLOW\s+172\.16\.0\.0/12"; then
+# absolute path: a non-login ssh session's PATH has no /usr/sbin, so
+# `command -v ufw` silently skipped this on the first deploy.
+UFW=/usr/sbin/ufw
+if [[ -x $UFW ]] && sudo -n $UFW status 2>/dev/null | grep -q "^Status: active"; then
+  if ! sudo -n $UFW status | grep -qE "^8088/tcp\s+ALLOW\s+172\.16\.0\.0/12"; then
     log "ufw: allow 8088/tcp from 172.16.0.0/12 (cn-devices exporter, docker bridges only)"
-    sudo -n ufw allow from 172.16.0.0/12 to any port 8088 proto tcp comment "cn-devices exporter (docker bridges only)" >/dev/null
+    sudo -n $UFW allow from 172.16.0.0/12 to any port 8088 proto tcp comment "cn-devices exporter (docker bridges only)" >/dev/null
+  else
+    echo "  ufw: 8088/tcp from 172.16.0.0/12 already allowed"
   fi
+else
+  echo "  ufw: not active or not installed — skipping the 8088 rule"
 fi
 
 log "docker compose up -d --remove-orphans"
